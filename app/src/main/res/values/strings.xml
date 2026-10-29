@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Mamta</string>
+    <string name="accessibility_service_desc">Allows Mamta to read screen content, navigate UI, and perform automated phone actions when requested.</string>
+</resources>

@@ -1,0 +1,8 @@
+{
+  "name": "Mamta",
+  "description": "Your versatile AI companion designed to streamline tasks, answer questions, and boost productivity through intelligent conversation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

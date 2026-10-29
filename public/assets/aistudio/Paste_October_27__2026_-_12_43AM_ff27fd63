@@ -1,0 +1,606 @@
+set -e
+P=$HOME/AIAssistant
+mkdir -p $P/src/com/deelip/assistant $P/assets $P/obj $P/res/xml $P/res/values
+cd $P
+
+cat > AndroidManifest.xml <<'MANIFEST'
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.deelip.assistant" android:versionCode="2" android:versionName="2.0">
+<uses-sdk android:minSdkVersion="26" android:targetSdkVersion="28"/>
+<uses-permission android:name="android.permission.INTERNET"/>
+<uses-permission android:name="android.permission.CALL_PHONE"/>
+<uses-permission android:name="android.permission.SEND_SMS"/>
+<uses-permission android:name="android.permission.READ_CONTACTS"/>
+<uses-permission android:name="android.permission.ANSWER_PHONE_CALLS"/>
+<uses-permission android:name="android.permission.READ_PHONE_STATE"/>
+<uses-permission android:name="com.android.alarm.permission.SET_ALARM"/>
+<uses-permission android:name="android.permission.FLASHLIGHT"/>
+<application android:label="AI Assistant">
+<activity android:name=".MainActivity" android:exported="true" android:configChanges="orientation|screenSize|keyboardHidden">
+<intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
+</activity>
+<service android:name=".PhoneService" android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE" android:exported="true">
+<intent-filter><action android:name="android.accessibilityservice.AccessibilityService"/></intent-filter>
+<meta-data android:name="android.accessibilityservice" android:resource="@xml/accessibility"/>
+</service>
+<service android:name=".NotifService" android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE" android:exported="true">
+<intent-filter><action android:name="android.service.notification.NotificationListenerService"/></intent-filter>
+</service>
+</application>
+</manifest>
+MANIFEST
+
+cat > res/xml/accessibility.xml <<'XML'
+<?xml version="1.0" encoding="utf-8"?>
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+ android:accessibilityEventTypes="typeAllMask"
+ android:accessibilityFeedbackType="feedbackGeneric"
+ android:canRetrieveWindowContent="true"
+ android:notificationTimeout="100"
+ android:description="@string/desc"/>
+XML
+
+cat > res/values/strings.xml <<'XML'
+<?xml version="1.0" encoding="utf-8"?>
+<resources><string name="desc">AI असिस्टेंट को स्क्रीन पढ़ने और टैप करने देता है</string></resources>
+XML
+
+cat > src/com/deelip/assistant/PhoneService.java <<'JAVA'
+package com.deelip.assistant;
+
+import android.accessibilityservice.AccessibilityService;
+import android.content.Intent;
+import android.os.Bundle;
+import android.view.accessibility.AccessibilityEvent;
+import android.view.accessibility.AccessibilityNodeInfo;
+import java.util.List;
+
+public class PhoneService extends AccessibilityService {
+    static PhoneService I;
+
+    @Override protected void onServiceConnected() { I = this; }
+    @Override public boolean onUnbind(Intent i) { I = null; return super.onUnbind(i); }
+    @Override public void onAccessibilityEvent(AccessibilityEvent e) {}
+    @Override public void onInterrupt() {}
+
+    static String off() { return "Accessibility सेवा चालू नहीं है। ऊपर ♿ बटन से चालू करें।"; }
+
+    static String read() {
+        if (I == null) return off();
+        AccessibilityNodeInfo r = I.getRootInActiveWindow();
+        if (r == null) return "स्क्रीन नहीं पढ़ पाया";
+        StringBuilder sb = new StringBuilder();
+        walk(r, sb);
+        return sb.length() == 0 ? "स्क्रीन पर कोई टेक्स्ट नहीं मिला" : sb.toString();
+    }
+
+    static void walk(AccessibilityNodeInfo n, StringBuilder sb) {
+        if (n == null || sb.length() > 3000) return;
+        CharSequence t = n.getText();
+        if (t == null) t = n.getContentDescription();
+        if (t != null && t.length() > 0) sb.append(n.isClickable() ? "[btn] " : "").append(t).append("\n");
+        for (int i = 0; i < n.getChildCount(); i++) walk(n.getChild(i), sb);
+    }
+
+    static String tap(String t) {
+        if (I == null) return off();
+        AccessibilityNodeInfo r = I.getRootInActiveWindow();
+        if (r == null) return "स्क्रीन नहीं पढ़ पाया";
+        List<AccessibilityNodeInfo> l = r.findAccessibilityNodeInfosByText(t);
+        for (AccessibilityNodeInfo node : l) {
+            AccessibilityNodeInfo x = node;
+            while (x != null && !x.isClickable()) x = x.getParent();
+            if (x != null && x.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return "टैप किया: " + t;
+        }
+        return "स्क्रीन पर नहीं मिला: " + t;
+    }
+
+    static String type(String t) {
+        if (I == null) return off();
+        AccessibilityNodeInfo r = I.getRootInActiveWindow();
+        if (r == null) return "स्क्रीन नहीं पढ़ पाया";
+        AccessibilityNodeInfo f = r.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
+        if (f == null) return "कोई टेक्स्ट बॉक्स चुना हुआ नहीं है";
+        Bundle b = new Bundle();
+        b.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, t);
+        return f.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, b) ? "टाइप किया" : "टाइप नहीं हो पाया";
+    }
+
+    static String press(String w) {
+        if (I == null) return off();
+        int a;
+        if (w.equals("home")) a = GLOBAL_ACTION_HOME;
+        else if (w.equals("back")) a = GLOBAL_ACTION_BACK;
+        else if (w.equals("recents")) a = GLOBAL_ACTION_RECENTS;
+        else if (w.equals("notifications")) a = GLOBAL_ACTION_NOTIFICATIONS;
+        else return "बटन: home, back, recents या notifications";
+        return I.performGlobalAction(a) ? "दबाया: " + w : "नहीं दबा";
+    }
+
+    static AccessibilityNodeInfo findScroll(AccessibilityNodeInfo n) {
+        if (n == null) return null;
+        if (n.isScrollable()) return n;
+        for (int i = 0; i < n.getChildCount(); i++) {
+            AccessibilityNodeInfo r = findScroll(n.getChild(i));
+            if (r != null) return r;
+        }
+        return null;
+    }
+
+    static String scroll(String d) {
+        if (I == null) return off();
+        AccessibilityNodeInfo s = findScroll(I.getRootInActiveWindow());
+        if (s == null) return "स्क्रॉल होने वाली चीज़ नहीं मिली";
+        int a = d.equals("up") ? AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD : AccessibilityNodeInfo.ACTION_SCROLL_FORWARD;
+        return s.performAction(a) ? "स्क्रॉल किया" : "स्क्रॉल नहीं हुआ";
+    }
+}
+JAVA
+
+cat > src/com/deelip/assistant/NotifService.java <<'JAVA'
+package com.deelip.assistant;
+
+import android.app.Notification;
+import android.app.RemoteInput;
+import android.content.Intent;
+import android.os.Bundle;
+import android.service.notification.NotificationListenerService;
+import android.service.notification.StatusBarNotification;
+import java.util.ArrayList;
+
+public class NotifService extends NotificationListenerService {
+    static final ArrayList<StatusBarNotification> L = new ArrayList<StatusBarNotification>();
+    static NotifService I;
+
+    @Override public void onListenerConnected() { I = this; }
+
+    @Override public void onNotificationPosted(StatusBarNotification s) {
+        if (s.getPackageName().equals(getPackageName()) || s.isOngoing()) return;
+        synchronized (L) {
+            L.add(s);
+            while (L.size() > 20) L.remove(0);
+        }
+    }
+
+    static String dump() {
+        if (I == null) return "Notification access चालू नहीं है। ऊपर 🔔 बटन से चालू करें।";
+        StringBuilder sb = new StringBuilder();
+        synchronized (L) {
+            for (int i = 0; i < L.size(); i++) {
+                StatusBarNotification s = L.get(i);
+                Bundle e = s.getNotification().extras;
+                sb.append(i).append(". ").append(s.getPackageName()).append(" | ")
+                  .append(e.getCharSequence(Notification.EXTRA_TITLE)).append(": ")
+                  .append(e.getCharSequence(Notification.EXTRA_TEXT)).append("\n");
+            }
+        }
+        return sb.length() == 0 ? "कोई नई नोटिफ़िकेशन नहीं" : sb.toString();
+    }
+
+    static String reply(int idx, String text) {
+        if (I == null) return "Notification access चालू नहीं है";
+        StatusBarNotification s;
+        synchronized (L) {
+            if (idx < 0 || idx >= L.size()) return "गलत नंबर";
+            s = L.get(idx);
+        }
+        Notification.Action[] acts = s.getNotification().actions;
+        if (acts == null) return "इसमें जवाब देने का विकल्प नहीं है";
+        for (Notification.Action a : acts) {
+            RemoteInput[] ris = a.getRemoteInputs();
+            if (ris != null && ris.length > 0) {
+                Intent in = new Intent();
+                Bundle b = new Bundle();
+                for (RemoteInput ri : ris) b.putCharSequence(ri.getResultKey(), text);
+                RemoteInput.addResultsToIntent(ris, in, b);
+                try {
+                    a.actionIntent.send(I, 0, in);
+                    return "जवाब भेज दिया";
+                } catch (Exception e) {
+                    return "एरर: " + e.getMessage();
+                }
+            }
+        }
+        return "इसमें जवाब देने का विकल्प नहीं है";
+    }
+}
+JAVA
+
+cat > src/com/deelip/assistant/MainActivity.java <<'JAVA'
+package com.deelip.assistant;
+
+import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.Context;
+import android.content.DialogInterface;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
+import android.database.Cursor;
+import android.hardware.camera2.CameraManager;
+import android.media.AudioManager;
+import android.net.Uri;
+import android.os.Build;
+import android.os.Bundle;
+import android.provider.AlarmClock;
+import android.provider.ContactsContract;
+import android.provider.Settings;
+import android.speech.RecognizerIntent;
+import android.speech.tts.TextToSpeech;
+import android.telecom.TelecomManager;
+import android.telephony.SmsManager;
+import android.webkit.JavascriptInterface;
+import android.webkit.JsPromptResult;
+import android.webkit.JsResult;
+import android.webkit.WebChromeClient;
+import android.webkit.WebSettings;
+import android.webkit.WebView;
+import android.webkit.WebViewClient;
+import android.widget.EditText;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+import org.json.JSONObject;
+
+public class MainActivity extends Activity {
+    WebView w;
+    TextToSpeech tts;
+
+    @Override
+    protected void onCreate(Bundle b) {
+        super.onCreate(b);
+        tts = new TextToSpeech(this, new TextToSpeech.OnInitListener() {
+            public void onInit(int st) {
+                if (st == TextToSpeech.SUCCESS) tts.setLanguage(new Locale("hi", "IN"));
+            }
+        });
+        w = new WebView(this);
+        WebSettings s = w.getSettings();
+        s.setJavaScriptEnabled(true);
+        s.setDomStorageEnabled(true);
+        w.setWebViewClient(new WebViewClient());
+        w.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public boolean onJsConfirm(WebView v, String u, String m, final JsResult r) {
+                new AlertDialog.Builder(MainActivity.this).setMessage(m).setCancelable(false)
+                    .setPositiveButton("हाँ", new DialogInterface.OnClickListener() {
+                        public void onClick(DialogInterface d, int i) { r.confirm(); }
+                    })
+                    .setNegativeButton("नहीं", new DialogInterface.OnClickListener() {
+                        public void onClick(DialogInterface d, int i) { r.cancel(); }
+                    }).show();
+                return true;
+            }
+            @Override
+            public boolean onJsPrompt(WebView v, String u, String m, String def, final JsPromptResult r) {
+                final EditText et = new EditText(MainActivity.this);
+                et.setText(def);
+                new AlertDialog.Builder(MainActivity.this).setMessage(m).setView(et).setCancelable(false)
+                    .setPositiveButton("ठीक है", new DialogInterface.OnClickListener() {
+                        public void onClick(DialogInterface d, int i) { r.confirm(et.getText().toString()); }
+                    })
+                    .setNegativeButton("रद्द", new DialogInterface.OnClickListener() {
+                        public void onClick(DialogInterface d, int i) { r.cancel(); }
+                    }).show();
+                return true;
+            }
+        });
+        w.addJavascriptInterface(new Bridge(), "Android");
+        setContentView(w);
+        if (Build.VERSION.SDK_INT >= 23) {
+            requestPermissions(new String[]{
+                "android.permission.CALL_PHONE", "android.permission.SEND_SMS",
+                "android.permission.READ_CONTACTS", "android.permission.ANSWER_PHONE_CALLS",
+                "android.permission.READ_PHONE_STATE"}, 1);
+        }
+        w.loadUrl("file:///android_asset/index.html");
+    }
+
+    @Override
+    protected void onActivityResult(int req, int res, Intent data) {
+        super.onActivityResult(req, res, data);
+        if (req == 1 && res == RESULT_OK && data != null) {
+            ArrayList<String> r = data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
+            if (r != null && r.size() > 0)
+                w.evaluateJavascript("onSpeech(" + JSONObject.quote(r.get(0)) + ")", null);
+        }
+    }
+
+    void go(Intent i) {
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        startActivity(i);
+    }
+
+    class Bridge {
+        @JavascriptInterface
+        public void speak(String t) {
+            if (tts != null) tts.speak(t, TextToSpeech.QUEUE_FLUSH, null);
+        }
+
+        @JavascriptInterface
+        public void listen() {
+            runOnUiThread(new Runnable() {
+                public void run() {
+                    Intent i = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+                    i.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+                    i.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "hi-IN");
+                    try { startActivityForResult(i, 1); } catch (Exception e) {}
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void ask(final String key, final String body) {
+            new Thread(new Runnable() {
+                public void run() {
+                    String out;
+                    try {
+                        URL u = new URL("https://api.anthropic.com/v1/messages");
+                        HttpURLConnection c = (HttpURLConnection) u.openConnection();
+                        c.setRequestMethod("POST");
+                        c.setRequestProperty("content-type", "application/json");
+                        c.setRequestProperty("x-api-key", key);
+                        c.setRequestProperty("anthropic-version", "2023-06-01");
+                        c.setDoOutput(true);
+                        c.setConnectTimeout(20000);
+                        c.setReadTimeout(90000);
+                        OutputStream os = c.getOutputStream();
+                        os.write(body.getBytes("UTF-8"));
+                        os.close();
+                        int code = c.getResponseCode();
+                        InputStream is = code >= 400 ? c.getErrorStream() : c.getInputStream();
+                        ByteArrayOutputStream bo = new ByteArrayOutputStream();
+                        byte[] buf = new byte[4096];
+                        int n;
+                        while ((n = is.read(buf)) > 0) bo.write(buf, 0, n);
+                        out = bo.toString("UTF-8");
+                    } catch (Exception e) {
+                        out = "{\"error\":{\"message\":\"" + String.valueOf(e.getMessage()).replace("\"", "'") + "\"}}";
+                    }
+                    final String res = out;
+                    runOnUiThread(new Runnable() {
+                        public void run() {
+                            w.evaluateJavascript("onReply(" + JSONObject.quote(res) + ")", null);
+                        }
+                    });
+                }
+            }).start();
+        }
+
+        @JavascriptInterface
+        public String run(String name, String args) {
+            try {
+                JSONObject a = new JSONObject(args);
+                if (name.equals("call_phone")) {
+                    go(new Intent(Intent.ACTION_CALL, Uri.parse("tel:" + a.getString("number"))));
+                    return "कॉल लगा दी";
+                }
+                if (name.equals("send_sms")) {
+                    SmsManager sm = SmsManager.getDefault();
+                    ArrayList<String> parts = sm.divideMessage(a.getString("text"));
+                    sm.sendMultipartTextMessage(a.getString("number"), null, parts, null, null);
+                    return "SMS भेज दिया";
+                }
+                if (name.equals("find_contact")) {
+                    Cursor c = getContentResolver().query(
+                        ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                        new String[]{ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME, ContactsContract.CommonDataKinds.Phone.NUMBER},
+                        ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME + " LIKE ?",
+                        new String[]{"%" + a.getString("name") + "%"}, null);
+                    StringBuilder sb = new StringBuilder();
+                    int n = 0;
+                    while (c != null && c.moveToNext() && n < 5) {
+                        sb.append(c.getString(0)).append(": ").append(c.getString(1)).append("\n");
+                        n++;
+                    }
+                    if (c != null) c.close();
+                    return sb.length() == 0 ? "कोई कॉन्टैक्ट नहीं मिला" : sb.toString();
+                }
+                if (name.equals("open_app")) {
+                    String q = a.getString("name").toLowerCase();
+                    PackageManager pm = getPackageManager();
+                    Intent main = new Intent(Intent.ACTION_MAIN, null);
+                    main.addCategory(Intent.CATEGORY_LAUNCHER);
+                    List<ResolveInfo> l = pm.queryIntentActivities(main, 0);
+                    for (ResolveInfo r : l) {
+                        String lb = r.loadLabel(pm).toString().toLowerCase();
+                        if (lb.contains(q)) {
+                            Intent i = pm.getLaunchIntentForPackage(r.activityInfo.packageName);
+                            if (i != null) { go(i); return "खोल दिया: " + lb; }
+                        }
+                    }
+                    return "ऐप नहीं मिला";
+                }
+                if (name.equals("open_url")) {
+                    go(new Intent(Intent.ACTION_VIEW, Uri.parse(a.getString("url"))));
+                    return "लिंक खोल दिया";
+                }
+                if (name.equals("set_alarm")) {
+                    Intent i = new Intent(AlarmClock.ACTION_SET_ALARM);
+                    i.putExtra(AlarmClock.EXTRA_HOUR, a.getInt("hour"));
+                    i.putExtra(AlarmClock.EXTRA_MINUTES, a.getInt("minute"));
+                    i.putExtra(AlarmClock.EXTRA_MESSAGE, a.optString("label", "Alarm"));
+                    i.putExtra(AlarmClock.EXTRA_SKIP_UI, true);
+                    go(i);
+                    return "अलार्म लगा दिया";
+                }
+                if (name.equals("set_timer")) {
+                    Intent i = new Intent(AlarmClock.ACTION_SET_TIMER);
+                    i.putExtra(AlarmClock.EXTRA_LENGTH, a.getInt("seconds"));
+                    i.putExtra(AlarmClock.EXTRA_SKIP_UI, true);
+                    go(i);
+                    return "टाइमर चालू";
+                }
+                if (name.equals("flashlight")) {
+                    CameraManager cm = (CameraManager) getSystemService(Context.CAMERA_SERVICE);
+                    boolean on = a.optBoolean("on", true);
+                    cm.setTorchMode(cm.getCameraIdList()[0], on);
+                    return on ? "टॉर्च चालू" : "टॉर्च बंद";
+                }
+                if (name.equals("set_volume")) {
+                    AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+                    int mx = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
+                    int p = Math.max(0, Math.min(100, a.getInt("percent")));
+                    am.setStreamVolume(AudioManager.STREAM_MUSIC, mx * p / 100, 0);
+                    return "वॉल्यूम " + p + "%";
+                }
+                if (name.equals("battery")) {
+                    Intent bi = registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+                    int lv = bi.getIntExtra("level", -1), sc = bi.getIntExtra("scale", 100);
+                    return "बैटरी " + (lv * 100 / sc) + "%";
+                }
+                if (name.equals("open_settings")) {
+                    String wh = a.optString("which", "general");
+                    String act = Settings.ACTION_SETTINGS;
+                    if (wh.equals("wifi")) act = Settings.ACTION_WIFI_SETTINGS;
+                    else if (wh.equals("bluetooth")) act = Settings.ACTION_BLUETOOTH_SETTINGS;
+                    else if (wh.equals("accessibility")) act = Settings.ACTION_ACCESSIBILITY_SETTINGS;
+                    else if (wh.equals("notification_access")) act = "android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS";
+                    go(new Intent(act));
+                    return "सेटिंग खोल दी";
+                }
+                if (name.equals("read_notifications")) return NotifService.dump();
+                if (name.equals("reply_notification")) return NotifService.reply(a.getInt("index"), a.getString("text"));
+                if (name.equals("answer_call")) {
+                    TelecomManager tm = (TelecomManager) getSystemService(Context.TELECOM_SERVICE);
+                    tm.acceptRingingCall();
+                    return "कॉल उठा ली";
+                }
+                if (name.equals("end_call")) {
+                    TelecomManager tm = (TelecomManager) getSystemService(Context.TELECOM_SERVICE);
+                    return tm.endCall() ? "कॉल काट दी" : "कॉल नहीं कटी";
+                }
+                if (name.equals("read_screen")) return PhoneService.read();
+                if (name.equals("tap_text")) return PhoneService.tap(a.getString("text"));
+                if (name.equals("type_text")) return PhoneService.type(a.getString("text"));
+                if (name.equals("press_button")) return PhoneService.press(a.getString("button"));
+                if (name.equals("scroll")) return PhoneService.scroll(a.getString("direction"));
+                return "अनजान काम: " + name;
+            } catch (Exception e) {
+                return "एरर: " + e;
+            }
+        }
+    }
+}
+JAVA
+
+cat > assets/index.html <<'HTML'
+<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI Assistant</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#0b0f1a;color:#e8ecf5;font-family:sans-serif;display:flex;flex-direction:column;height:100vh}
+#top{padding:10px;background:#121a2e;display:flex;justify-content:space-between;align-items:center}
+#top div button{margin-left:4px;padding:8px 10px}
+#chat{flex:1;overflow-y:auto;padding:12px}
+.m{max-width:88%;padding:10px 14px;margin:8px 0;border-radius:14px;white-space:pre-wrap;line-height:1.4}
+.u{background:#2a5bff;margin-left:auto}
+.a{background:#1c2540}
+.s{background:#2b2b3a;font-size:13px;color:#9fb0d8}
+#bar{display:flex;gap:6px;padding:10px;background:#121a2e}
+#t{flex:1;min-width:0;padding:12px;border-radius:10px;border:0;background:#1c2540;color:#fff;font-size:16px}
+button{padding:10px 14px;border:0;border-radius:10px;background:#2a5bff;color:#fff;font-size:16px}
+</style></head>
+<body>
+<div id="top"><b>🤖 AI Assistant</b>
+<div><button onclick="setKey()">🔑</button><button onclick="Android.run('open_settings','{&quot;which&quot;:&quot;accessibility&quot;}')">♿</button><button onclick="Android.run('open_settings','{&quot;which&quot;:&quot;notification_access&quot;}')">🔔</button><button onclick="clearChat()">🗑</button></div></div>
+<div id="chat"></div>
+<div id="bar"><input id="t" placeholder="लिखिए या 🎤 दबाइए"><button onclick="Android.listen()">🎤</button><button onclick="send()">➤</button></div>
+<script>
+var MODEL='claude-sonnet-5-5';
+var SYSTEM='तुम एक मददगार AI असिस्टेंट हो जो यूज़र का Android फ़ोन चला सकता है। हमेशा हिंदी में छोटे और साफ़ जवाब दो। फ़ोन का कोई काम हो तो tools का इस्तेमाल करो। कॉल, SMS और मैसेज के जवाब से पहले ऐप खुद यूज़र से अनुमति माँगता है। किसी ऐप के अंदर काम करना हो तो पहले read_screen से स्क्रीन देखो, फिर tap_text या type_text करो।';
+function T(n,d,p){var pr={},rq=[];for(var k in p){pr[k]={type:p[k]==='s'?'string':p[k]==='n'?'number':'boolean'};rq.push(k);}return{name:n,description:d,input_schema:{type:'object',properties:pr,required:rq}};}
+var TOOLS=[
+T('call_phone','Call a phone number',{number:'s'}),
+T('send_sms','Send an SMS',{number:'s',text:'s'}),
+T('find_contact','Find phone number of a contact by name',{name:'s'}),
+T('open_app','Open an installed app by its name',{name:'s'}),
+T('open_url','Open a web URL in the browser',{url:'s'}),
+T('set_alarm','Set an alarm, 24 hour clock',{hour:'n',minute:'n',label:'s'}),
+T('set_timer','Start a countdown timer',{seconds:'n'}),
+T('flashlight','Turn the flashlight on or off',{on:'b'}),
+T('set_volume','Set media volume, percent 0 to 100',{percent:'n'}),
+T('battery','Get battery percentage',{}),
+T('open_settings','Open a settings screen: wifi, bluetooth, accessibility, notification_access or general',{which:'s'}),
+T('read_notifications','List recent notifications with index numbers',{}),
+T('reply_notification','Reply to a notification by its index',{index:'n',text:'s'}),
+T('answer_call','Answer the ringing call',{}),
+T('end_call','End the current call',{}),
+T('read_screen','Read the text visible on the current screen',{}),
+T('tap_text','Tap a button or item on the screen by its text',{text:'s'}),
+T('type_text','Type text into the focused input field',{text:'s'}),
+T('press_button','Press home, back, recents or notifications',{button:'s'}),
+T('scroll','Scroll the screen, direction up or down',{direction:'s'})
+];
+var DANGER=['call_phone','send_sms','reply_notification','answer_call','end_call'];
+var hist=[];try{hist=JSON.parse(localStorage.getItem('h')||'[]');}catch(e){}
+var busy=false,thinking=null,start=0;
+function add(c,t){var d=document.createElement('div');d.className='m '+c;d.textContent=t;var ch=document.getElementById('chat');ch.appendChild(d);ch.scrollTop=ch.scrollHeight;return d;}
+function save(){while(hist.length>40){hist.shift();while(hist.length&&!(hist[0].role==='user'&&typeof hist[0].content==='string'))hist.shift();}try{localStorage.setItem('h',JSON.stringify(hist));}catch(e){}}
+function clearChat(){hist=[];save();document.getElementById('chat').innerHTML='';}
+function setKey(){var k=prompt('अपनी API key डालिए',localStorage.getItem('k')||'');if(k!==null)localStorage.setItem('k',k.trim());}
+hist.forEach(function(m){if(m.role==='user'&&typeof m.content==='string')add('u',m.content);else if(m.role==='assistant'&&Array.isArray(m.content))m.content.forEach(function(b){if(b.type==='text'&&b.text)add('a',b.text);});});
+function send(){
+  if(busy)return;
+  var inp=document.getElementById('t');var t=inp.value.trim();
+  if(!t)return;
+  if(!localStorage.getItem('k')){setKey();return;}
+  inp.value='';add('u',t);start=hist.length;hist.push({role:'user',content:t});busy=true;go();
+}
+function go(){
+  thinking=add('a','सोच रहा हूँ...');
+  Android.ask(localStorage.getItem('k'),JSON.stringify({model:MODEL,max_tokens:1024,system:SYSTEM,tools:TOOLS,messages:hist}));
+}
+function execTool(b){
+  if(DANGER.indexOf(b.name)>=0){
+    if(!confirm('AI यह करना चाहता है:\n'+b.name+' '+JSON.stringify(b.input)+'\n\nअनुमति दें?'))return 'यूज़र ने मना कर दिया';
+  }
+  add('s','⚙️ '+b.name);
+  return Android.run(b.name,JSON.stringify(b.input||{}));
+}
+function onReply(r){
+  if(thinking&&thinking.parentNode)thinking.parentNode.removeChild(thinking);
+  var o;try{o=JSON.parse(r);}catch(e){o={error:{message:r}};}
+  if(!o.content){
+    add('a','एरर: '+(o.error?o.error.message:r));
+    hist.length=start;busy=false;save();return;
+  }
+  hist.push({role:'assistant',content:o.content});
+  var txt='';
+  o.content.forEach(function(b){if(b.type==='text'&&b.text){add('a',b.text);txt+=b.text+' ';}});
+  if(o.stop_reason==='tool_use'){
+    var res=[];
+    o.content.forEach(function(b){if(b.type==='tool_use')res.push({type:'tool_result',tool_use_id:b.id,content:String(execTool(b))});});
+    hist.push({role:'user',content:res});
+    go();
+  }else{
+    busy=false;save();
+    if(txt)Android.speak(txt);
+  }
+}
+function onSpeech(t){document.getElementById('t').value=t;send();}
+document.getElementById('t').addEventListener('keydown',function(e){if(e.key==='Enter')send();});
+</script>
+</body></html>
+HTML
+
+[ -s android.jar ] || curl -L -o android.jar https://github.com/Sable/android-platforms/raw/master/android-28/android.jar
+[ -f key.jks ] || keytool -genkey -keystore key.jks -alias k -keyalg RSA -keysize 2048 -validity 10000 -storepass 123456 -keypass 123456 -dname "CN=Deelip"
+
+rm -rf obj/* classes.dex app.unsigned.apk app.apk
+ecj -1.8 -encoding UTF-8 -d obj -classpath android.jar src/com/deelip/assistant/*.java
+dx --dex --output=classes.dex obj
+aapt package -f -M AndroidManifest.xml -S res -A assets -I android.jar -F app.unsigned.apk
+aapt add app.unsigned.apk classes.dex
+apksigner sign --ks key.jks --ks-pass pass:123456 --out app.apk app.unsigned.apk
+
+cp app.apk /sdcard/Download/AIAssistant.apk
+echo "✅ तैयार! Download/AIAssistant.apk इंस्टॉल कीजिए"
